@@ -36,10 +36,55 @@ def create_kinesis_client():
         logger.error(f"An unexpected error occurred while creating Kinesis client: {e}")
         return None
 
+def _send_batch(kinesis_client, stream_name, batch_records):
+    """Sends a batch of records to Kinesis using PutRecords and handles retries for failures."""
+    if not batch_records:
+        return 0
+
+    failed_record_count = 0
+    try:
+        response = kinesis_client.put_records(
+            Records=batch_records,
+            StreamName=stream_name
+        )
+
+        if response.get('FailedRecordCount', 0) > 0:
+            logger.warning(f"Batch send to Kinesis had {response['FailedRecordCount']} failed records.")
+            # Basic retry for failed records (could be more sophisticated with backoff)
+            # For simplicity, we just log them here and count them as failed.
+            # A production system might implement more robust retry or dead-letter queue.
+            failed_records_details = []
+            for i, record_response in enumerate(response.get('Records', [])):
+                if 'ErrorCode' in record_response: # Indicates failure for this specific record
+                    failed_records_details.append({
+                        "original_record_index": i, # Index in the batch_records list
+                        "ErrorCode": record_response.get('ErrorCode'),
+                        "ErrorMessage": record_response.get('ErrorMessage')
+                    })
+            logger.warning(f"Details of failed records: {json.dumps(failed_records_details)}")
+            failed_record_count = response['FailedRecordCount']
+        else:
+            logger.info(f"Successfully sent batch of {len(batch_records)} records to Kinesis.")
+
+    except ClientError as e:
+        logger.error(f"ClientError sending batch to Kinesis: {e}. All {len(batch_records)} records in this batch considered failed.")
+        return len(batch_records) # All records in batch failed
+    except Exception as e:
+        logger.error(f"Unexpected error sending batch to Kinesis: {e}. All {len(batch_records)} records in this batch considered failed.")
+        return len(batch_records) # All records in batch failed
+
+    return failed_record_count
+
+
 def stream_data(kinesis_client, stream_name, csv_file):
     if not kinesis_client:
         logger.error("Kinesis client is not available. Cannot stream data.")
         return
+
+    MAX_RECORDS_PER_BATCH = 500  # Kinesis PutRecords limit
+    # Max payload size for PutRecords is 5MB, each record up to 1MB.
+    # We'll primarily limit by record count here for simplicity.
+    MAX_BATCH_BYTES = 4 * 1024 * 1024 # Target 4MB to stay well under 5MB Kinesis limit
 
     try:
         df = pd.read_csv(csv_file)
@@ -49,35 +94,45 @@ def stream_data(kinesis_client, stream_name, csv_file):
             return
         
         df = df.dropna(subset=['clean_text'])
-        df = df.tail(1000)  # Sample size
+        # df = df.tail(1000) # We'll stream the whole CSV or a larger part for batch testing
 
-        logger.info(f"Starting to stream {len(df)} records to Kinesis stream: {stream_name}")
+        total_records_to_stream = len(df)
+        logger.info(f"Starting to stream approximately {total_records_to_stream} records in batches to Kinesis stream: {stream_name}")
+
+        records_batch = []
+        current_batch_bytes = 0
+        records_sent_count = 0
+        total_failed_records = 0
 
         for index, row in df.iterrows():
             message = {
-                "id": index,
+                "id": index, # Using DataFrame index as part of ID
                 "text": row['clean_text'],
                 "produced_at": time.time(),
             }
-            # Kinesis needs data as bytes, and a partition key
-            # Using 'id' as partition key for reasonably good distribution for this example
-            partition_key = str(message["id"])
+            partition_key = str(message["id"]) # Simple partition key
             payload = json.dumps(message).encode('utf-8')
 
-            try:
-                response = kinesis_client.put_record(
-                    StreamName=stream_name,
-                    Data=payload,
-                    PartitionKey=partition_key
-                )
-                logger.info(f"Sent record with ID {message['id']} to Kinesis. SequenceNumber: {response['SequenceNumber']}")
-            except ClientError as e:
-                logger.error(f"Failed to send record ID {message['id']} to Kinesis: {e}")
-                # Depending on the error, you might want to retry or handle it differently
-            except Exception as e:
-                logger.error(f"An unexpected error occurred while sending record ID {message['id']} to Kinesis: {e}")
+            # Check if adding this record exceeds batch size limits
+            if len(records_batch) >= MAX_RECORDS_PER_BATCH or (current_batch_bytes + len(payload)) >= MAX_BATCH_BYTES:
+                if records_batch:
+                    failed_count = _send_batch(kinesis_client, stream_name, records_batch)
+                    total_failed_records += failed_count
+                    records_sent_count += (len(records_batch) - failed_count)
+                    records_batch = []
+                    current_batch_bytes = 0
+                    time.sleep(0.05) # Small delay between batches to manage API call rate
 
-            time.sleep(0.1) # Adjusted sleep time for Kinesis (can be tuned)
+            records_batch.append({'Data': payload, 'PartitionKey': partition_key})
+            current_batch_bytes += len(payload)
+
+        # Send any remaining records in the last batch
+        if records_batch:
+            failed_count = _send_batch(kinesis_client, stream_name, records_batch)
+            total_failed_records += failed_count
+            records_sent_count += (len(records_batch) - failed_count)
+
+        logger.info(f"Finished streaming. Total records sent successfully: {records_sent_count}. Total failed records: {total_failed_records}.")
             
     except FileNotFoundError:
         logger.error(f"Error: The file {csv_file} was not found.")
