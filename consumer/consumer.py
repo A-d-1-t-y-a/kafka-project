@@ -17,11 +17,15 @@ os.environ['PYSPARK_DRIVER_PYTHON'] = sys.executable
 os.environ['PYSPARK_SUBMIT_ARGS'] = '--packages org.apache.spark:spark-streaming-kinesis-asl_2.12:3.2.4 pyspark-shell'
 
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col, from_json, split, explode, length, avg, count, desc, udf, current_timestamp, window, lower, expr
 )
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType, FloatType, ArrayType, BooleanType, DoubleType
+from pyspark import StorageLevel
 import nltk
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 import logging
@@ -242,9 +246,7 @@ def main():
         
         kinesis_stream_name = os.environ.get('KINESIS_STREAM_NAME')
         aws_region = os.environ.get('AWS_REGION', 'us-east-1')
-        # Kinesis endpoint URL for local testing (e.g. with localstack or kinesalite) or specific AWS partitions
         kinesis_endpoint_url = os.environ.get('KINESIS_ENDPOINT_URL', f'https://kinesis.{aws_region}.amazonaws.com')
-        # Starting position: "latest", "trim_horizon", or "at_timestamp"
         kinesis_starting_position = os.environ.get('KINESIS_STARTING_POSITION', 'latest')
 
         if not kinesis_stream_name:
@@ -254,35 +256,32 @@ def main():
         logger.info(f"Connecting to Kinesis stream: {kinesis_stream_name} in region {aws_region} at endpoint {kinesis_endpoint_url}")
         logger.info(f"Starting position: {kinesis_starting_position}")
 
-        kinesis_df = spark.readStream \
-            .format("kinesis") \
-            .option("streamName", kinesis_stream_name) \
-            .option("endpointUrl", kinesis_endpoint_url) \
-            .option("region", aws_region) \
-            .option("startingPosition", kinesis_starting_position) \
-            .option("awsAccessKeyId", os.environ.get("AWS_ACCESS_KEY_ID")) \
-            .option("awsSecretKey", os.environ.get("AWS_SECRET_ACCESS_KEY")) \
-            .option("maxOffsetsPerTrigger", os.environ.get("MAX_OFFSETS_PER_TRIGGER", "1000")) \
-            .load()
+        # --- DStream Kinesis Integration ---
+        from pyspark import SparkContext
+        from pyspark.streaming import StreamingContext
+        from pyspark.streaming.kinesis import KinesisUtils, InitialPositionInStream
 
-        # Kinesis data is binary and needs to be cast to string, then parsed from JSON
-        # The actual data is in the 'data' column as Base64 encoded binary.
-        schema = StructType([
-            StructField("id", IntegerType(), True),
-            StructField("text", StringType(), True),
-            StructField("produced_at", DoubleType(), True) # Unix timestamp (seconds)
-        ])
+        sc = spark.sparkContext
+        ssc = StreamingContext(sc, 10)  # 10 second batch interval
 
-        # Decode Kinesis 'data' field (which is base64 encoded) into string, then parse JSON
-        # Kinesis 'data' column -> cast to STRING (Spark auto base64 decodes) -> from_json
-        parsed_df = kinesis_df.select(
-            from_json(col("data").cast("string"), schema).alias("json_data")
-        ).select("json_data.*")
+        aws_access_key = os.environ.get("AWS_ACCESS_KEY_ID")
+        aws_secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY")
 
+        # Remove protocol from endpoint for DStream API
+        endpoint_url = kinesis_endpoint_url.replace("https://", "").replace("http://", "")
 
-        # Define checkpoint location - essential for stateful operations and recovery
-        # For S3, ensure the path is like "s3a://your-bucket/your-checkpoint-dir/"
-        # And that the Spark job has write permissions to this S3 location.
+        kinesisStream = KinesisUtils.createStream(
+            ssc,
+            "KinesisDStreamApp",  # app name
+            kinesis_stream_name,
+            endpoint_url,
+            aws_region,
+            InitialPositionInStream.LATEST if kinesis_starting_position == "latest" else InitialPositionInStream.TRIM_HORIZON,
+            2,  # checkpoint interval (seconds)
+            aws_access_key,
+            aws_secret_key,
+            StorageLevel.DISK_ONLY_2  
+        )
         checkpoint_location = os.environ.get('CHECKPOINT_LOCATION', "kinesis_checkpoint_dir_local")
         if checkpoint_location.startswith("s3"):
              logger.info(f"Using S3 checkpoint location: {checkpoint_location}")

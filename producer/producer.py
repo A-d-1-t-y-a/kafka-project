@@ -19,8 +19,10 @@ def create_kinesis_client():
     logger.info(f"Creating Kinesis client in region: {aws_region}")
     try:
         client = boto3.client('kinesis', region_name=aws_region)
+        print("client", client)
+        
         # Quick check to see if client can describe streams (verifies credentials and region vaguely)
-        client.list_streams(Limit=1)
+        # client.list_streams(Limit=1)
         logger.info("Kinesis client created successfully.")
         return client
     except (NoCredentialsError, PartialCredentialsError) as e:

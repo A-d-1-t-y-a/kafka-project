@@ -1,28 +1,55 @@
-# Real-time Text Data Processing System
+# Real-time Tweet Analysis with AWS
 
-This project implements a scalable text data processing system that performs real-time analysis of streaming text data using Apache Kafka and Apache Spark.
+This project implements a serverless real-time tweet analysis pipeline using AWS services. It processes streaming tweet data, performs sentiment analysis, and stores the results in Amazon S3 and Amazon OpenSearch Service.
+
+## Architecture
+
+```
++----------------+     +------------------+     +------------------+     +---------------+
+|                |     |                  |     |                  |     |               |
+|  Tweet Source  +---->+  Kinesis Stream  +---->+  AWS Lambda     +---->+  S3 (Raw)    |
+|  (CSV/API)     |     |                  |     |  (Processing)   |     |               |
++----------------+     +------------------+     +--------+-------+     +---------------+
+                                                         |                     
+                                                         |                     
+                                                         v                     
+                                                   +-----+-----+               
+                                                   |           |               
+                                                   |  S3       |               
+                                                   | (Results) |               
+                                                   |           |               
+                                                   +-----+-----+               
+                                                         |                     
+                                                         v                     
+                                                   +-----+-----+               
+                                                   |           |               
+                                                   | OpenSearch|               
+                                                   |  Service  |               
+                                                   |           |               
+                                                   +-----------+               
+```
 
 ## Features
 
-- Real-time text data ingestion using Kafka
-- Parallel processing with PySpark
-- Text analysis including:
-  - Word count
-  - Sentiment analysis
-  - Trending topics
-- Real-time visualization of results
+- Real-time data ingestion using Amazon Kinesis Data Streams
+- Serverless processing with AWS Lambda
+- Sentiment analysis using NLTK
+- Data storage in Amazon S3
+- Search and analytics with Amazon OpenSearch Service
+- Monitoring with Amazon CloudWatch
 
 ## Prerequisites
 
 - Python 3.8+
-- Docker and Docker Compose
-- Java 8 or higher (for Apache Spark)
+- AWS Account with appropriate permissions
+- AWS CLI configured with credentials
+- Required AWS resources:
+  - Kinesis Data Stream
+  - S3 Buckets (for raw data and results)
+  - OpenSearch Domain
+  - IAM roles with appropriate permissions
 
 ## Setup Instructions
-
-### Option 1: Local Setup
-
-**IMPORTANT**: The following steps must be performed in order.
 
 1. **Clone the repository**:
 
@@ -46,8 +73,32 @@ source venv/bin/activate  # On Linux/Mac
 pip install -r requirements.txt
 ```
 
-4. **Download NLP Data (MANDATORY ONE-TIME STEP)**:
-   This script downloads the necessary data for sentiment analysis. It must be run before starting the consumer.
+4. **Set up environment variables**:
+   Create a `.env` file in the project root with the following variables:
+
+```bash
+# AWS Configuration
+AWS_ACCESS_KEY_ID=your_access_key
+AWS_SECRET_ACCESS_KEY=your_secret_key
+AWS_REGION=your_region
+
+# Kinesis
+KINESIS_STREAM_NAME=your-kinesis-stream
+
+# S3
+S3_RAW_BUCKET=your-raw-bucket
+S3_RESULTS_BUCKET=your-results-bucket
+
+# OpenSearch
+OPENSEARCH_DOMAIN=your-opensearch-domain
+OPENSEARCH_INDEX=tweets
+```
+
+5. **Download NLTK Data**:
+   Run the following command to download required NLTK data:
+
+```bash
+python -c "import nltk; nltk.download('vader_lexicon'); nltk.download('stopwords')"
 
    ```bash
    python setup_nltk.py
