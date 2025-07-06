@@ -29,7 +29,7 @@ from pyspark.sql.types import (
 )
 from nltk.sentiment.vader import SentimentIntensityAnalyzer as SIA
 from nltk.corpus import stopwords as nltk_stopwords
-from .s3_upload_helper import push_to_cloud_storage as s3_upload
+from s3_upload_helper import push_to_cloud_storage as s3_upload
 
 # Set up Spark Python environment
 os.environ["PYSPARK_PYTHON"] = sys.executable
@@ -95,7 +95,10 @@ def analyze_article_batch(batch_df, batch_idx):
             "delay", (select_col("published_at") - _time.time())
         )
         avg_delay = latency_df.agg(_avg("delay")).collect()[0][0]
-        print(f"Mean latency: {avg_delay:.2f} s")
+        if avg_delay is not None:
+            print(f"Mean latency: {avg_delay:.2f} s")
+        else:
+            print("Mean latency: N/A (not enough data)")
     else:
         latency_df = batch_df
 
